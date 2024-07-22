@@ -10,62 +10,112 @@ import copyBids from "./copyBids";
 
 let qsmxtInstance: ChildProcessWithoutNullStreams | null;
 
-export const setupListeners = (child: ChildProcessWithoutNullStreams, reject: (reason?: any) => void) => { 
-  child.stdout.removeAllListeners();
-  child.stderr.removeAllListeners();
-  child.removeAllListeners();
-  child.stderr.on('data', (data) => {
-    logger.red(`stderr: ${data}`);
-    reject(data)
-  });
-  child.on('error', (error) => {
-    logger.red(`error: ${error.message}`);
-    reject(error.message)
-  });
+function _cleanupListeners(process: ChildProcessWithoutNullStreams): void {
+  process.stdout.removeAllListeners();
+  process.stderr.removeAllListeners();
+  process.removeAllListeners();
 }
+
+export const setupListeners = (
+  process: ChildProcessWithoutNullStreams,
+  completionString: string,
+  resolve: any,
+  reject: (reason?: any) => void,
+  logFilePath: string | null = null,
+) => {
+  logger.yellow(
+    logFilePath ? `Logging to ${logFilePath}` : "No log file path provided",
+  );
+
+  process.stderr.on("data", (err: Buffer) => {
+    logger.red("stderr " + err.toString());
+    if (logFilePath) {
+      fs.appendFileSync(logFilePath, `stderr " + ${err.toString()}\n`, {
+        encoding: "utf-8",
+      });
+    }
+    _cleanupListeners(process);
+    reject(new Error(err.toString()));
+  });
+
+  process.on("error", (error) => {
+    logger.red(`error: ${error.message}`);
+    if (logFilePath) {
+      fs.appendFileSync(logFilePath, `error: ${error.message}\n`, {
+        encoding: "utf-8",
+      });
+    }
+    _cleanupListeners(process);
+    reject(new Error(error.message));
+  });
+
+  process.on("exit", (code, signal) => {
+    const _code: number | null = code;
+    console.log(
+      "child process exited with " + `code ${code} and signal ${signal}`,
+    );
+    if (_code === 0 || _code === null) {
+      _cleanupListeners(process);
+      resolve(null);
+    } else {
+      if (logFilePath) {
+        fs.appendFileSync(
+          logFilePath,
+          "child process exited with " + `code ${code} and signal ${signal}`,
+          { encoding: "utf-8" },
+        );
+      }
+      _cleanupListeners(process);
+      reject(
+        new Error(
+          "child process exited with " + `code ${code} and signal ${signal}`,
+        ),
+      );
+    }
+  });
+
+  process.stdout.on("data", (data) => {
+    const stringData = data.toString();
+    stringData.split("\n").forEach((line: string) => {
+      if (logFilePath) {
+        fs.appendFileSync(logFilePath, line + "\n", { encoding: "utf-8" });
+      }
+      if (line.includes("ERROR:")) {
+        logger.red(line);
+        reject(new Error(line));
+      }
+      if (line.includes(completionString)) {
+        resolve(null);
+      }
+    });
+  });
+};
 
 export const runQsmxtCommand = async (
   command: string,
   completionString: string,
   logFilePath: string | null = null,
-  errorString: string = 'ERROR:'
-) => {
+): Promise<void> => {
   // Spawn a new shell process
-  const process = spawn(command, [], { shell: true });
-
-  await new Promise((resolve, reject) => {
-    setupListeners(process, reject);
-
-    process.stdout.on('data', (data) => {
-      const stringData = data.toString();
-      stringData.split('\n').forEach((line: string) => {
-        if (line.includes('ERROR:')) {
-          logger.red(line);
-        } else if (logFilePath) {
-          fs.appendFileSync(logFilePath, line + '\n', { encoding: 'utf-8' })
-        }
-        if (line.includes(completionString)) {
-          resolve(null);
-        }
-        if (line.includes(errorString)) {
-          reject(line);
-        }
-      });
-    });
-
-    logger.yellow(`Running: "${command}"`);
+  const process: ChildProcessWithoutNullStreams = spawn(command, [], {
+    shell: true,
   });
 
+  let runQsm: Promise<void> = new Promise((resolve, reject) => {
+    setupListeners(process, completionString, resolve, reject, logFilePath);
+    logger.yellow(new Date().toISOString() + `Running: "${command}"`);
+  });
   // Kill the process after the command is executed.
-  process.kill();
+  // process.kill();
+  return runQsm;
 };
 
 const killChildProcess = () => {
   if (qsmxtInstance) {
-    logger.green('Killing child');
+    logger.green("Killing child");
     qsmxtInstance.kill();
   }
-}
+};
 
 export default {
   convertDicoms,
@@ -73,5 +123,5 @@ export default {
   runQsmPipeline,
   runSegmentation,
   copyBids,
-  killChildProcess
-}
+  killChildProcess,
+};
